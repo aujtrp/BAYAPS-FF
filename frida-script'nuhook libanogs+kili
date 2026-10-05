@@ -1,0 +1,118 @@
+/*
+ * Free Fire AC bypass — userspace layer
+ * Target: libanogs.so (Tencent AC), libGarenaAntiCheat.so
+ * Run: frida -U -f com.dts.freefireth -l bypass.js --no-pause
+ */
+
+'use strict';
+
+const TARGETS = [
+    'libanogs.so',
+    'libGarenaAntiCheat.so',
+    'libffac.so',
+    'libff_anticheat.so',
+    'libGameCore.so'
+];
+
+function log(tag, msg) {
+    console.log(`[ALPHA XK][${tag}] ${msg}`);
+}
+
+// 1. Hook dlopen — cegah AC library load hook detection
+const dlopen = Module.findExportByName(null, 'android_dlopen_ext');
+if (dlopen) {
+    Interceptor.attach(dlopen, {
+        onEnter(args) {
+            const path = args[0].readCString();
+            if (path && TARGETS.some(t => path.includes(t))) {
+                log('dlopen', `blocked AC lib load: ${path}`);
+                args[0] = Memory.allocUtf8String('/dev/null');
+            }
+        }
+    });
+}
+
+// 2. Scan + unhook inline hooks di libanogs
+function unhookModule(name) {
+    const mod = Process.findModuleByName(name);
+    if (!mod) return;
+    log('unhook', `${name} @ ${mod.base} size=${mod.size}`);
+
+    // Deteksi prologue yang bukan asli — pattern common hook stub
+    // ARM64: LDR X16, #8 / BR X16 / <addr>
+    const hookPatterns = [
+        [0x58000050, 0xd61f0200], // ldr x16, #8; br x16
+        [0x58000070, 0xd61f0220], // ldr x17, #8; br x17
+    ];
+
+    mod.enumerateExports().forEach(exp => {
+        try {
+            const code = Memory.readU32(exp.address);
+            const code2 = Memory.readU32(exp.address.add(4));
+            for (const [a, b] of hookPatterns) {
+                if (code === a && code2 === b) {
+                    log('hook-found', `${exp.name} @ ${exp.address}`);
+                    // Restore original prologue — baca dari file offset di /proc/maps
+                    // (implementasi lengkap butuh file byte read dari apk/oat)
+                }
+            }
+        } catch (e) {}
+    });
+}
+
+TARGETS.forEach(unhookModule);
+
+// 3. Kill integrity check — native func umum di IL2CPP
+const integrityFuncs = [
+    'JNI_OnLoad',
+    'GarenaIntegrityCheck',
+    'CheckMemoryIntegrity',
+    'VerifySignature',
+    'AntiDebugCheck',
+    'anti_debug_check',
+    'detect_frida',
+    'detect_root',
+    'detect_magisk'
+];
+
+for (const name of integrityFuncs) {
+    const addr = Module.findExportByName(null, name);
+    if (addr) {
+        Interceptor.replace(addr, new NativeCallback(() => {
+            log('integrity', `${name} → 1 (return pass)`);
+            return 1;
+        }, 'int', []));
+    }
+}
+
+// 4. ptrace anti-debug bypass
+const ptrace = Module.findExportByName(null, 'ptrace');
+if (ptrace) {
+    Interceptor.attach(ptrace, {
+        onEnter(args) {
+            if (args[0].toInt32() === 0) { // PTRACE_TRACEME
+                log('ptrace', 'spoofed PTRACE_TRACEME');
+                args[0] = ptr(-1); // invalid request → syscall gagal, AC pikir normal
+            }
+        }
+    });
+}
+
+// 5. Hide frida dari /proc/self/maps string scan
+const fopen = Module.findExportByName(null, 'fopen');
+if (fopen) {
+    Interceptor.attach(fopen, {
+        onEnter(args) {
+            const path = args[0].readCString();
+            if (path && path.includes('/maps')) {
+                // AC baca maps — arahkan ke file filtered (dibuat kernel layer)
+                const pid = Process.id;
+                const filtered = `/data/local/tmp/maps_filtered_${pid}`;
+                log('maps', `redirect ${path} → ${filtered}`);
+                args[0] = Memory.allocUtf8String(filtered);
+            }
+        }
+    });
+}
+
+log('ready', 'userspace bypass active — AC integrity neutralized');
