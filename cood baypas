@@ -1,0 +1,11 @@
+ff_bypass/
+├── kernel/
+│   ├── zygisk_detach.sh
+│   └── hide_maps.sh
+├── userspace/
+│   ├── bypass.js
+│   └── libff_bypass.cpp
+├── il2cpp/
+│   ├── dump_offsets.py
+│   └── patch_metadata.js
+└── README.md
