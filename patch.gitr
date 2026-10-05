@@ -1,0 +1,61 @@
+/*
+ * IL2CPP method patch — ganti return value dari getter
+ * Target: libil2cpp.so + global-metadata.dat
+ * Run: frida -U -f com.dts.freefireth -l patch_metadata.js
+ */
+
+'use strict';
+
+const IL2CPP = Process.findModuleByName('libil2cpp.so');
+if (!IL2CPP) {
+    console.log('[ALPHA XK] libil2cpp belum load, exit');
+} else {
+    console.log(`[ALPHA XK] libil2cpp @ ${IL2CPP.base}`);
+
+    // Il2CppClass struct layout — cari via pattern "Il2CppClass" string
+    // atau pakai tool: Il2CppDumper.exe → dump.cs → offset
+    // Setelah punya RVA, patch di sini.
+
+    // Contoh: hook il2cpp_runtime_invoke untuk intercept semua method call
+    const runtime_invoke = Module.findExportByName('libil2cpp.so', 'il2cpp_runtime_invoke');
+    if (runtime_invoke) {
+        Interceptor.attach(runtime_invoke, {
+            onEnter(args) {
+                this.method = args[0];
+                this.obj = args[1];
+                // Baca nama method dari Il2CppMethodInfo
+                try {
+                    const namePtr = this.method.add(0x10).readPointer();
+                    const name = namePtr.readCString();
+                    if (name && /AntiCheat|Integrity|Detect/.test(name)) {
+                        console.log(`[ALPHA XK] intercepted: ${name}`);
+                        this.block = true;
+                    }
+                } catch (e) {}
+            },
+            onLeave(retval) {
+                if (this.block) {
+                    retval.replace(ptr(0));
+                }
+            }
+        });
+    }
+
+    // Patch il2cpp_string_new — biar AC string check return null
+    const string_new = Module.findExportByName('libil2cpp.so', 'il2cpp_string_new');
+    if (string_new) {
+        Interceptor.attach(string_new, {
+            onEnter(args) {
+                this.str = args[0].readCString();
+            },
+            onLeave(retval) {
+                if (this.str && /frida|magisk|hook/.test(this.str)) {
+                    console.log(`[ALPHA XK] sanitized string: ${this.str}`);
+                    retval.replace(ptr(0));
+                }
+            }
+        });
+    }
+}
+
+console.log('[ALPHA XK] metadata patch active');
