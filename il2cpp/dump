@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""
+Dump IL2CPP metadata Free Fire buat cari offset class Player, Health, Position.
+Run setelah extract APK: unzip -o ff.apk -d ff_extracted
+"""
+import struct, sys, re
+from pathlib import Path
+
+IL2CPP = Path("ff_extracted/lib/arm64-v8a/libil2cpp.so")
+META   = Path("ff_extracted/assets/bin/Data/Managed/Metadata/global-metadata.dat")
+
+# IL2CPP metadata magic
+MAGIC = 0xFAB11BAF
+
+def read_header(path):
+    with open(path, 'rb') as f:
+        magic, ver = struct.unpack('<II', f.read(8))
+        if magic != MAGIC:
+            print(f"[!] magic mismatch: {magic:#x}")
+            return None
+        return {'version': ver}
+
+def find_strings(path, targets):
+    """Cari target string di metadata — offset string pool."""
+    data = path.read_bytes()
+    results = {}
+    for t in targets:
+        idx = data.find(t.encode())
+        if idx >= 0:
+            results[t] = idx
+    return results
+
+def scan_methods(metadata_path, class_names):
+    """
+    Parse IL2CPP metadata (simplified):
+    - Header: magic, version, string_offset, string_count, ...
+    - Method definitions table
+    """
+    with open(metadata_path, 'rb') as f:
+        data = f.read()
+
+    # Il2CppGlobalMetadataHeader: 60+ fields. Offset string table di 0x18/0x20 versi modern
+    # Layout beda tiap versi IL2CPP (24.1, 27.x, 29.x). Parse via signature.
+    string_off = struct.unpack('<I', data[0x18:0x1C])[0]
+    string_len = struct.unpack('<I', data[0x1C:0x20])[0]
+    print(f"[+] string pool @ {string_off:#x} len {string_len}")
+
+    # Cari setiap class target
+    hits = {}
+    for name in class_names:
+        off = data.find(name.encode(), string_off, string_off + string_len)
+        if off >= 0:
+            hits[name] = off
+            print(f"[+] '{name}' @ {off:#x}")
+        else:
+            print(f"[-] '{name}' tidak ketemu")
+    return hits
+
+if __name__ == '__main__':
+    if not IL2CPP.exists() or not META.exists():
+        print("[!] extract APK dulu: unzip -o ff.apk -d ff_extracted")
+        sys.exit(1)
+
+    print("[ALPHA XK] IL2CPP dump start")
+    hdr = read_header(META)
+    print(f"[+] metadata version: {hdr['version']}")
+
+    targets = [
+        "Player", "PlayerHealth", "PlayerController",
+        "Character", "LocalPlayer", "GameManager",
+        "AntiCheatManager", "IntegrityCheck",
+        "get_Health", "get_Position", "get_TeamID",
+    ]
+    scan_methods(META, targets)
+
+    print("[ALPHA XK] dump done — copy offset ke patch_metadata.js")
